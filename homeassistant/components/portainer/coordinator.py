@@ -457,6 +457,8 @@ class PortainerCoordinator(
                     endpoint.name,
                     endpoint.id,
                 )
+                if self.data and endpoint.id in self.data:
+                    mapped_endpoints[endpoint.id] = self.data[endpoint.id]
                 continue
 
         self._async_add_remove_endpoints(mapped_endpoints)

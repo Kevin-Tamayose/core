@@ -441,6 +441,107 @@ async def test_removed_endpoint_stops_event_listener(
     assert 1 not in coordinator._event_listeners
 
 
+async def test_endpoint_timeout_preserves_previous_data(
+    hass: HomeAssistant,
+    mock_portainer_client: AsyncMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test an endpoint timeout preserves its data for the next refresh."""
+    endpoints = cast(
+        list[dict[str, Any]],
+        await async_load_json_array_fixture(hass, "endpoints.json", DOMAIN),
+    )
+    for endpoint in endpoints:
+        endpoint["Status"] = EndpointStatus.UP
+    mock_portainer_client.get_endpoints.return_value = [
+        Endpoint.from_dict(endpoint) for endpoint in endpoints
+    ]
+
+    await setup_integration(hass, mock_config_entry)
+
+    coordinator = mock_config_entry.runtime_data
+    previous_data = coordinator.data
+    assert previous_data is not None
+    previous_known_containers = coordinator.known_containers.copy()
+    timed_out_endpoint_id = next(iter(previous_data))
+    previous_endpoint = previous_data[timed_out_endpoint_id]
+    previous_container = next(iter(previous_endpoint.containers.values()))
+    previous_stats = previous_container.stats
+
+    async def _get_containers(endpoint_id: int) -> list[DockerContainer]:
+        if endpoint_id == timed_out_endpoint_id:
+            raise PortainerTimeoutError("timeout")
+        return mock_portainer_client.get_containers.return_value
+
+    mock_portainer_client.get_containers.side_effect = _get_containers
+    await coordinator.async_refresh()
+
+    assert coordinator.data is not None
+    assert coordinator.data[timed_out_endpoint_id] is previous_endpoint
+    assert coordinator.known_containers == previous_known_containers
+
+    mock_portainer_client.get_containers.side_effect = None
+    await coordinator.async_refresh()
+
+    assert coordinator.data is not None
+    refreshed_container = coordinator.data[timed_out_endpoint_id].containers[
+        next(iter(previous_endpoint.containers))
+    ]
+    assert refreshed_container.stats_pre == previous_stats
+
+
+async def test_endpoint_timeout_does_not_rediscover_containers(
+    hass: HomeAssistant,
+    mock_portainer_client: AsyncMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test an endpoint timeout does not trigger new container callbacks."""
+    await setup_integration(hass, mock_config_entry)
+
+    coordinator = mock_config_entry.runtime_data
+    callback = MagicMock()
+    coordinator.new_containers_callbacks.append(callback)
+
+    mock_portainer_client.get_containers.side_effect = PortainerTimeoutError("timeout")
+    await coordinator.async_refresh()
+    mock_portainer_client.get_containers.side_effect = None
+    await coordinator.async_refresh()
+
+    callback.assert_not_called()
+
+
+async def test_endpoint_timeout_on_initial_load_recovers(
+    hass: HomeAssistant,
+    mock_portainer_client: AsyncMock,
+    mock_config_entry: MockConfigEntry,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Test an endpoint that times out on initial load recovers later."""
+    mock_portainer_client.get_containers.side_effect = PortainerTimeoutError("timeout")
+    await setup_integration(hass, mock_config_entry)
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.data == {}
+    assert all(
+        entry.entity_id.startswith("update.")
+        for entry in er.async_entries_for_config_entry(
+            entity_registry, mock_config_entry.entry_id
+        )
+    )
+
+    mock_portainer_client.get_containers.side_effect = None
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coordinator.data
+    assert any(
+        not entry.entity_id.startswith("update.")
+        for entry in er.async_entries_for_config_entry(
+            entity_registry, mock_config_entry.entry_id
+        )
+    )
+
+
 async def test_new_container_callback(
     hass: HomeAssistant,
     mock_portainer_client: AsyncMock,

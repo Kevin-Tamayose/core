@@ -17,7 +17,7 @@ from syrupy.assertion import SnapshotAssertion
 from homeassistant.components.portainer.const import DOMAIN
 from homeassistant.components.portainer.coordinator import DEFAULT_SCAN_INTERVAL
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import STATE_UNAVAILABLE, Platform
+from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -85,11 +85,11 @@ async def test_refresh_endpoints_exceptions(
 
 
 @pytest.mark.parametrize(
-    ("exception"),
+    ("exception", "expected_state"),
     [
-        PortainerAuthenticationError("bad creds"),
-        PortainerConnectionError("cannot connect"),
-        PortainerTimeoutError("timeout"),
+        (PortainerAuthenticationError("bad creds"), STATE_UNAVAILABLE),
+        (PortainerConnectionError("cannot connect"), STATE_UNAVAILABLE),
+        (PortainerTimeoutError("timeout"), STATE_ON),
     ],
 )
 async def test_refresh_containers_exceptions(
@@ -97,9 +97,10 @@ async def test_refresh_containers_exceptions(
     mock_portainer_client: AsyncMock,
     mock_config_entry: MockConfigEntry,
     exception: Exception,
+    expected_state: str,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Test entities go unavailable after container refresh failures."""
+    """Test entity state after container refresh failures."""
     await setup_integration(hass, mock_config_entry)
     assert mock_config_entry.state is ConfigEntryState.LOADED
 
@@ -110,10 +111,10 @@ async def test_refresh_containers_exceptions(
     await hass.async_block_till_done(wait_background_tasks=True)
 
     assert (state := hass.states.get("binary_sensor.practical_morse_status"))
-    assert state.state == STATE_UNAVAILABLE
+    assert state.state == expected_state
 
 
-async def test_endpoint_timeout_only_marks_that_endpoint_unavailable(
+async def test_endpoint_timeout_preserves_endpoint_availability(
     hass: HomeAssistant,
     mock_portainer_client: AsyncMock,
     mock_config_entry: MockConfigEntry,
@@ -150,6 +151,6 @@ async def test_endpoint_timeout_only_marks_that_endpoint_unavailable(
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
     assert (state := hass.states.get("binary_sensor.my_edge_offline_status"))
-    assert state.state == STATE_UNAVAILABLE
+    assert state.state != STATE_UNAVAILABLE
     assert (state := hass.states.get("binary_sensor.my_environment_status"))
     assert state.state != STATE_UNAVAILABLE
