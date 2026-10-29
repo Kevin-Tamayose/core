@@ -326,9 +326,23 @@ async def test_offline_node(
 ) -> None:
     """Test that an offline or unknown state node doesn't cause the entire update to fail."""
     mock_proxmox_client.nodes.get.return_value = mock_proxmox_client._all_nodes
+    offline_node_mock = MagicMock()
+    offline_node_mock.qemu.get.side_effect = ResourceException(596, "Node offline", "")
+    offline_node_mock.lxc.get.side_effect = ResourceException(596, "Node offline", "")
+    mock_proxmox_client._nodes_mock.side_effect = lambda node: (
+        offline_node_mock
+        if node in {"pve3", "pve4"}
+        else mock_proxmox_client._node_mock
+    )
+
     await setup_integration(hass, mock_config_entry)
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert {
+        call_args.args[0] for call_args in mock_proxmox_client.nodes.call_args_list
+    } == {"pve1", "pve2"}
+    offline_node_mock.qemu.get.assert_not_called()
+    offline_node_mock.lxc.get.assert_not_called()
 
     state = hass.states.get("binary_sensor.pve1_status")
     assert state.state == STATE_ON

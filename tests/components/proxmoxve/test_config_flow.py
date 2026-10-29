@@ -740,6 +740,14 @@ async def test_form_offline_node_skipped(
 ) -> None:
     """Test that offline nodes are skipped during config flow."""
     mock_proxmox_client.nodes.get.return_value = mock_proxmox_client._all_nodes
+    offline_node_mock = MagicMock()
+    offline_node_mock.qemu.get.side_effect = ResourceException(596, "Node offline", "")
+    offline_node_mock.lxc.get.side_effect = ResourceException(596, "Node offline", "")
+    mock_proxmox_client._nodes_mock.side_effect = lambda node: (
+        offline_node_mock
+        if node in {"pve3", "pve4"}
+        else mock_proxmox_client._node_mock
+    )
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
@@ -762,3 +770,8 @@ async def test_form_offline_node_skipped(
     assert "pve3" not in nodes_in_result
     assert "pve1" in nodes_in_result
     assert "pve2" in nodes_in_result
+    assert {
+        call_args.args[0] for call_args in mock_proxmox_client.nodes.call_args_list
+    } == {"pve1", "pve2"}
+    offline_node_mock.qemu.get.assert_not_called()
+    offline_node_mock.lxc.get.assert_not_called()
